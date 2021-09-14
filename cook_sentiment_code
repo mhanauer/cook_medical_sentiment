@@ -1,0 +1,343 @@
+---
+title: "Chatter text analysis example"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+In this example, we are trying to analyze chatter data in three ways:
+
+1. Word clouds
+2. Sentiment by emotion
+3. Topic modeling (i.e., exploratory factor analysis for words)
+
+Load data and packages
+
+```{r}
+library(renv)
+library(rmarkdown)
+#renv::activate()
+#renv::snapshot()
+#utils::install.packages(c("tinytex", "readr", "lubridate", "dplyr", "tidytext", "ggplot2", "SnowballC", "wordcloud", "reshape2", "wordcloud2", "stringr", "topicmodels", "ggplot2", "readxl", "webshot"))
+
+library(tinytex)
+library(readr)
+library(lubridate)
+library(dplyr)
+#install.packages("tidytext")
+library(tidytext)
+library(ggplot2)
+library(SnowballC)
+#install.packages("wordcloud")
+library(wordcloud)
+library(reshape2)
+library(wordcloud2)
+library(stringr)
+library(topicmodels)
+library(ggplot2)
+library(readxl)
+library(devtools)
+library(sentimentr)
+library(reticulate)
+library(tm)
+library(descr)
+library(stringr)
+library(textplot)
+library(ggraph)
+library(concaveman)
+library(udpipe)
+library(BTM)
+transformers <- reticulate::import("transformers")
+classifier = transformers$pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+mayo_facility_level_tasks = read_excel("mayo_salesforce_all_time_9_2_21.xlsx", sheet = 1)
+mayo_facility_level_tasks
+mayo_idn_level_tasks = read_excel("mayo_salesforce_all_time_9_2_21.xlsx", sheet = 2)
+mayo_facility_level_chatter = read_excel("mayo_salesforce_all_time_9_2_21.xlsx", sheet = 3)
+mayo_idn_level_chatter = read_excel("mayo_salesforce_all_time_9_2_21.xlsx", sheet = 4)
+```
+Merge the data sets
+First, create indicators for each variable to identify which data set is which
+Next, find out which ones have the same columns
+```{r}
+mayo_facility_level_tasks$data_set_id = rep("mayo_facility_level_tasks", dim(mayo_facility_level_tasks)[1])
+mayo_idn_level_tasks$data_set_id = rep("mayo_idn_level_tasks", dim(mayo_idn_level_tasks)[1])
+mayo_facility_level_chatter$data_set_id = rep("mayo_facility_level_chatter", dim(mayo_facility_level_chatter)[1])
+mayo_idn_level_chatter$data_set_id = rep("mayo_idn_level_chatter", dim(mayo_idn_level_chatter)[1])
+###### Now merge what you can
+mayo_tasks = bind_rows(mayo_facility_level_tasks, mayo_idn_level_tasks)
+
+### Remove NAs, because there is some weird stuff in date
+mayo_facility_level_chatter = mayo_facility_level_chatter %>%
+  tidyr::drop_na()
+
+mayo_chatter = bind_rows(mayo_facility_level_chatter, mayo_idn_level_chatter)
+
+mayo_chatter = mayo_chatter %>% 
+  rename("Task Owner" = `Created By: Full Name...3`) %>%
+  select(c(`Created Date`, `Account Name`, Body, data_set_id)) %>%
+  rename("Full Comments" = `Body`)
+
+###J Remove extra variables before merging
+mayo_tasks = mayo_tasks %>%
+  select(-c(Subject, Division))
+
+all_dat_mayo = bind_rows(mayo_tasks, mayo_chatter)
+
+### Drop missing data from full comments and only include unique entries
+all_dat_mayo = all_dat_mayo %>%
+  tidyr::drop_na(`Full Comments`) %>%
+  distinct(`Full Comments`, .keep_all = TRUE) %>%
+  mutate(`Created Date` = mdy(`Created Date`)) %>%
+  mutate(`Full Comments` = tolower(`Full Comments`)) %>%
+  mutate(`Full Comments` = str_replace_all(`Full Comments`, "[[:punct:]]", " ")) 
+  
+### Create date
+all_dat_mayo
+
+```
+
+Here we are cleaning up the data.
+
+First, we are making the date something R can read.
+
+Next, we are turning the data into a tibble format so the function below, which turns the data into a one word one row format works.
+
+Then we remove the stop words and stem the words (i.e., excit = excited, exciting, excitement).
+```{r}
+#### Create a data frame
+text_df =  tibble(all_dat_mayo, text = `Full Comments`)
+
+### 
+
+# one word one row
+text_df = text_df %>%
+  unnest_tokens(word, text)
+text_df
+
+### Remove stop words and stem the words
+data(stop_words)
+text_df = text_df %>%
+  anti_join(stop_words) %>%
+   mutate(stem = wordStem(word))
+text_df
+```
+
+Sentiment scores
+See paper for details on scoring: https://arxiv.org/abs/1103.2903
+```{r}
+mayo_sentiment =  sentimentr::sentiment_by(all_dat_mayo$`Full Comments`)
+sentiment_means = compmeans(all_dat_mayo$ave_sentiment, all_dat_mayo$data_set_id)
+sentiment_means = data.frame(sentiment_means)
+sentiment_means = sentiment_means %>%
+  mutate(Mean = round(Mean, 2)) %>%
+  select(-c(Std..Dev.))
+
+sentiment_means = add_rownames(sentiment_means, var = "data_source")
+sentiment_means = sentiment_means %>%
+  mutate(data_source = case_when(
+    data_source == "mayo_facility_level_chatter" ~ "Mayo facility level chatter",
+    data_source == "mayo_facility_level_tasks" ~ "Mayo facility level tasks", 
+    data_source == "mayo_idn_level_chatter" ~ "Mayo IDN level chatter", 
+    data_source == "mayo_idn_level_tasks" ~ "Mayo IDN level tasks", 
+    data_source == "Total" ~ "Overall mean"
+  ))
+sentiment_means
+
+sentiment_means$data_source <- factor(sentiment_means$data_source, levels = sentiment_means$data_source[order(sentiment_means$Mean)])
+all_dat_mayo = data.frame(all_dat_mayo, ave_sentiment = mayo_sentiment$ave_sentiment)
+#### Plot the means and total
+
+```
+Plot the sentiment scores with unbounde range
+```{r}
+p<-ggplot(data=sentiment_means, aes(x=Mean, y=data_source, fill = data_source)) +
+  geom_bar(stat="identity")+
+  geom_text(aes(label=paste0(Mean, " ", "(", "n =",N,")"),hjust=1.5, vjust=-1))+
+  theme_minimal() + 
+  theme(legend.position="none") + 
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank())+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  ggtitle("Mean sentiment Mayo chatter/tasks \n 2020-01 to 2021-08") 
+p
+
+```
+Plot the emotions
+Then identify the negations 
+```{r}
+#mayo_emotion = sentimentr::emotion(all_dat_mayo$Full.Comments)
+mayo_emotion = sentimentr::emotion(all_dat_mayo$`Full Comments`)
+mayo_emotion_dat = mayo_emotion %>%
+  group_by(emotion_type) %>%
+  mutate(negation = str_detect(emotion_type, "_negated")) %>%
+  mutate(emotion = if_else(negation == TRUE, -emotion, emotion)) %>%
+  mutate(emotion_type = str_remove(emotion_type, "_negated")) %>%
+  summarise(mean_emotion = mean(emotion))
+
+mayo_emotion_dat$emotion_type <- factor(mayo_emotion_dat$emotion_type, levels = mayo_emotion_dat$emotion_type[order(mayo_emotion_dat$mean_emotion)])
+
+mayo_emotion_dat = mayo_emotion_dat %>%
+  mutate(mean_emotion = paste(100*round(mean_emotion, 3), "%")) 
+
+mayo_emotion_dat
+```
+Plot percentage of emotion
+```{r}
+p<-ggplot(data=mayo_emotion_dat, aes(x=  emotion_type, y= mean_emotion, fill = emotion_type)) +
+  coord_flip() +
+  geom_bar(stat="identity") +
+  geom_text(aes(label=mean_emotion), vjust=-0.1, hjust = 1.1, size=3.5)+
+  theme_minimal() + 
+  theme(legend.position="none") + 
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank())+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  ggtitle("Emotion count Mayo chatter/tasks \n 2020-01 to 2021-08")
+p
+```
+Now try hugging face
+```{r}
+
+candidate_labels = c("Buy", "Own", "Advocate")
+result <- classifier(all_dat_mayo$`Full Comments`, candidate_labels, multi_label = TRUE)
+data_test = unlist(result)
+
+huggy_face_sequence = list()
+huggy_face_labels = list()
+huggy_face_scores = list()
+huggy_data_clean = list()
+for(i in 1:length(result)){
+  huggy_face_sequence[[i]] = result[[i]]$sequence
+  huggy_face_labels[[i]] = result[[i]]$labels
+  huggy_face_scores[[i]] = result[[i]]$scores
+}
+
+
+huggy_face_labels = unlist(huggy_face_labels)
+huggy_face_scores = unlist(huggy_face_scores) 
+
+huggy_face_labels_scores = data.frame(labels = huggy_face_labels, scores = huggy_face_scores)
+huggy_face_labels_scores
+huggy_face_sequence = unlist(huggy_face_sequence)
+huggy_face_sequence = rep(huggy_face_sequence, each = 3)
+
+huggy_data_clean = data.frame(huggy_face_labels_scores, text_dat = huggy_face_sequence)
+huggy_data_clean = huggy_data_clean %>%
+  mutate(scores = round(scores, 2)) %>%
+  filter(scores >= .25)
+huggy_data_clean
+```
+Data cleaning for buy, own, advocate
+Sentiment scores
+See paper for details on scoring: https://arxiv.org/abs/1103.2903
+```{r}
+mayo_journey_sentiment =  sentimentr::sentiment_by(huggy_data_clean$text_dat)
+mayo_journey_sentiment = mayo_journey_sentiment %>%
+  bind_cols(huggy_data_clean$labels)
+colnames(mayo_journey_sentiment)[5] = "journey"
+
+
+sentiment_means = compmeans(mayo_journey_sentiment$ave_sentiment, mayo_journey_sentiment$journey)
+sentiment_means = data.frame(sentiment_means)
+sentiment_means = sentiment_means %>%
+  mutate(Mean = round(Mean, 2)) %>%
+  select(-c(Std..Dev.)) %>%
+  slice(-4)
+
+sentiment_means
+
+sentiment_means = add_rownames(sentiment_means, var = "journey")
+sentiment_means
+
+sentiment_means$journey <- factor(sentiment_means$journey , levels = sentiment_means$journey [order(sentiment_means$Mean)])
+
+```
+Plot the sentiment scores with unbounded range
+```{r}
+p<-ggplot(data=sentiment_means, aes(x=Mean, y=journey, fill = Mean))+
+  geom_bar(stat="identity")+
+  geom_text(aes(label=paste0(Mean, " ", "(", "n =",N,")"),hjust=1.5, vjust=-1))+
+  theme_minimal() + 
+  theme(legend.position="none") + 
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank())+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  ggtitle("Mean sentiment by journey Mayo chatter/tasks \n 2020-01 to 2021-08") 
+p
+
+```
+Emotion by journey
+```{r}
+mayo_emotion = sentimentr::emotion(huggy_data_clean$text_dat)
+mayo_emotion
+mayo_emotion_dat = mayo_emotion %>%
+  group_by(emotion_type) %>%
+  mutate(negation = str_detect(emotion_type, "_negated")) %>%
+  mutate(emotion = if_else(negation == TRUE, -emotion, emotion)) %>%
+  mutate(emotion_type = str_remove(emotion_type, "_negated")) %>%
+  summarise(mean_emotion = mean(emotion))
+
+mayo_emotion_dat$emotion_type <- factor(mayo_emotion_dat$emotion_type, levels = mayo_emotion_dat$emotion_type[order(mayo_emotion_dat$mean_emotion)])
+
+mayo_emotion_dat = mayo_emotion_dat %>%
+  mutate(mean_emotion = paste(100*round(mean_emotion, 3), "%")) 
+
+mayo_emotion_dat
+
+```
+
+
+
+
+Let's try udpipe and clustering
+
+keywords_collocation: words that are most commonly used together
+```{r}
+
+
+stats <- keywords_collocation(x = annotate_mayo_data, term = "token", group = "doc_id")
+
+## remove stop words
+graph_stats = stats %>%
+  anti_join(stop_words, by = c("left" = "word")) %>%
+  anti_join(stop_words, by = c("right" = "word")) %>%
+  slice(1:15) %>%
+  mutate(pmi = round(pmi, 2))
+graph_stats
+
+graph_stats$keyword <- factor(graph_stats$keyword, levels = graph_stats$keyword[order(graph_stats$pmi)])
+
+```
+Biterm models is similar to topic modeling but using biterms to identify patterns. 
+Need to filter for more important words per creaters, remove stop words
+Still need to view stopwords and identify which are important to keep (i.e., order, orders).
+```{r}
+ud_model = udpipe_download_model(language = "english")
+ud_model = udpipe_load_model(ud_model$file_model)
+annotate_mayo_data = udpipe(ud_model, x = all_dat_mayo$Full.Comments)
+annotate_mayo_data_btm = annotate_mayo_data %>%
+  filter(xpos == "NN" | xpos == "NNP" | xpos == "NNS" | xpos == "JJ") %>%
+  filter(token %in% stop_words$word) %>%
+  filter(token != "t")
+
+stop_words
+write.csv(stop_words, "stop_words.csv", row.names = FALSE)
+
+mode_mayo_btm$biterms
+
+mode_mayo_btm <- BTM(annotate_mayo_data_btm, k = 5, beta = 0.01, iter = 10, background = TRUE,  trace = 10, detailed = TRUE)
+plot(mode_mayo_btm) +
+  ggtitle("Biterm topic model for A360 lite")
+```
+Topics by journey
+
