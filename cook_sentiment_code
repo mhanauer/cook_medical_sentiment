@@ -279,47 +279,65 @@ p
 Emotion by journey
 ```{r}
 mayo_emotion = sentimentr::emotion(huggy_data_clean$text_dat)
-mayo_emotion
+### Need to match up journey with element ID
+
+id_label_dat <- transform(huggy_data_clean, sentence_id=match(text_dat, unique(text_dat)))
+
+
+mayo_emotion = mayo_emotion %>%
+  left_join(id_label_dat %>% select(sentence_id, labels), by = "sentence_id")
+
+
 mayo_emotion_dat = mayo_emotion %>%
-  group_by(emotion_type) %>%
+  group_by(emotion_type, labels) %>%
   mutate(negation = str_detect(emotion_type, "_negated")) %>%
   mutate(emotion = if_else(negation == TRUE, -emotion, emotion)) %>%
   mutate(emotion_type = str_remove(emotion_type, "_negated")) %>%
-  summarise(mean_emotion = mean(emotion))
+  summarise(mean_emotion = mean(emotion)) %>%
+  mutate(mean_emotion = round(mean_emotion,4))
 
-mayo_emotion_dat$emotion_type <- factor(mayo_emotion_dat$emotion_type, levels = mayo_emotion_dat$emotion_type[order(mayo_emotion_dat$mean_emotion)])
 
-mayo_emotion_dat = mayo_emotion_dat %>%
-  mutate(mean_emotion = paste(100*round(mean_emotion, 3), "%")) 
 
-mayo_emotion_dat
 
+```
+Plot emotion by buy, own, and advocate
+```{r}
+emotion_journey_plot_fun = function(dat, label){
+emotion_buy = dat %>%
+  filter(labels == label) %>%
+  arrange(desc(mean_emotion)) %>%
+  select(-labels)
+emotion_buy$emotion_type <- factor(emotion_buy$emotion_type, levels = emotion_buy$emotion_type[order(emotion_buy$mean_emotion)])
+
+p<-ggplot(data=emotion_buy, aes(x=  emotion_type, y= mean_emotion, fill = emotion_type)) +
+  coord_flip() +
+  geom_bar(stat="identity") +
+  geom_text(aes(label=mean_emotion), vjust=-0.1, hjust = 1.1, size=3.5)+
+  theme_minimal() + 
+  theme(legend.position="none") + 
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank())+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  ggtitle("Emotion percentage buy phase Mayo chatter/tasks \n 2020-01 to 2021-08")
+return(p)
+}
 ```
 
 
-
-
-Let's try udpipe and clustering
-
-keywords_collocation: words that are most commonly used together
+Now plot the emotions by journey
 ```{r}
-
-
-stats <- keywords_collocation(x = annotate_mayo_data, term = "token", group = "doc_id")
-
-## remove stop words
-graph_stats = stats %>%
-  anti_join(stop_words, by = c("left" = "word")) %>%
-  anti_join(stop_words, by = c("right" = "word")) %>%
-  slice(1:15) %>%
-  mutate(pmi = round(pmi, 2))
-graph_stats
-
-graph_stats$keyword <- factor(graph_stats$keyword, levels = graph_stats$keyword[order(graph_stats$pmi)])
+buy_emotion_plot = emotion_journey_plot_fun(dat = mayo_emotion_dat, label = "Buy")
+own_emotion_plot = emotion_journey_plot_fun(dat = mayo_emotion_dat, label = "Own")
+advocate_emotion_plot = emotion_journey_plot_fun(dat = mayo_emotion_dat, label = "Advocate")
+buy_emotion_plot
+own_emotion_plot
+advocate_emotion_plot
 
 ```
 Biterm models is similar to topic modeling but using biterms to identify patterns. 
-Need to filter for more important words per creaters, remove stop words
+Need to filter for more important words per creators, remove stop words
 Still need to view stopwords and identify which are important to keep (i.e., order, orders).
 ```{r}
 ud_model = udpipe_download_model(language = "english")
@@ -330,9 +348,6 @@ annotate_mayo_data_btm = annotate_mayo_data %>%
   filter(token %in% stop_words$word) %>%
   filter(token != "t")
 
-stop_words
-write.csv(stop_words, "stop_words.csv", row.names = FALSE)
-
 mode_mayo_btm$biterms
 
 mode_mayo_btm <- BTM(annotate_mayo_data_btm, k = 5, beta = 0.01, iter = 10, background = TRUE,  trace = 10, detailed = TRUE)
@@ -340,4 +355,36 @@ plot(mode_mayo_btm) +
   ggtitle("Biterm topic model for A360 lite")
 ```
 Topics by journey
+```{r}
+journey_biterm_function = function(label){
+
+huggy_data_clean_buy = huggy_data_clean %>%
+  filter(labels  == label)
+
+ud_model = udpipe_download_model(language = "english")
+ud_model = udpipe_load_model(ud_model$file_model)
+annotate_mayo_data = udpipe(ud_model, x = huggy_data_clean_buy$text_dat)
+annotate_mayo_data_btm = annotate_mayo_data %>%
+  filter(xpos == "NN" | xpos == "NNP" | xpos == "NNS" | xpos == "JJ") %>%
+  filter(token %in% stop_words$word) %>%
+  filter(token != "t")
+
+annotate_mayo_data_btm
+
+mode_mayo_btm <- BTM(annotate_mayo_data_btm, k = 5, beta = 0.01, iter = 10, background = TRUE,  trace = 10, detailed = TRUE)
+return (plot(mode_mayo_btm) +
+  ggtitle("Biterm topic model for A360 lite"))
+}
+
+```
+Topics by journey stage
+```{r}
+buy_journey_topic = journey_biterm_function(label = "Buy")
+own_journey_topic = journey_biterm_function(label = "Own")
+advocate_journey_topic = journey_biterm_function(label = "Advocate")
+buy_journey_topic
+own_journey_topic
+advocate_journey_topic
+```
+
 
