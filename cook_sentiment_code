@@ -51,6 +51,7 @@ library(ggraph)
 library(concaveman)
 library(udpipe)
 library(BTM)
+#renv::restore()
 transformers <- reticulate::import("transformers")
 classifier = transformers$pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 mayo_facility_level_tasks = read_excel("mayo_salesforce_all_time_9_2_21.xlsx", sheet = 1)
@@ -100,36 +101,12 @@ all_dat_mayo
 
 ```
 
-Here we are cleaning up the data.
-
-First, we are making the date something R can read.
-
-Next, we are turning the data into a tibble format so the function below, which turns the data into a one word one row format works.
-
-Then we remove the stop words and stem the words (i.e., excit = excited, exciting, excitement).
-```{r}
-#### Create a data frame
-text_df =  tibble(all_dat_mayo, text = `Full Comments`)
-
-### 
-
-# one word one row
-text_df = text_df %>%
-  unnest_tokens(word, text)
-text_df
-
-### Remove stop words and stem the words
-data(stop_words)
-text_df = text_df %>%
-  anti_join(stop_words) %>%
-   mutate(stem = wordStem(word))
-text_df
-```
 
 Sentiment scores
 See paper for details on scoring: https://arxiv.org/abs/1103.2903
 ```{r}
 mayo_sentiment =  sentimentr::sentiment_by(all_dat_mayo$`Full Comments`)
+all_dat_mayo$ave_sentiment = mayo_sentiment$ave_sentiment
 sentiment_means = compmeans(all_dat_mayo$ave_sentiment, all_dat_mayo$data_set_id)
 sentiment_means = data.frame(sentiment_means)
 sentiment_means = sentiment_means %>%
@@ -152,7 +129,7 @@ all_dat_mayo = data.frame(all_dat_mayo, ave_sentiment = mayo_sentiment$ave_senti
 #### Plot the means and total
 
 ```
-Plot the sentiment scores with unbounde range
+Plot the sentiment scores with unbounded range
 ```{r}
 p<-ggplot(data=sentiment_means, aes(x=Mean, y=data_source, fill = data_source)) +
   geom_bar(stat="identity")+
@@ -172,7 +149,7 @@ Plot the emotions
 Then identify the negations 
 ```{r}
 #mayo_emotion = sentimentr::emotion(all_dat_mayo$Full.Comments)
-mayo_emotion = sentimentr::emotion(all_dat_mayo$`Full Comments`)
+mayo_emotion = sentimentr::emotion(all_dat_mayo$Full.Comments)
 mayo_emotion_dat = mayo_emotion %>%
   group_by(emotion_type) %>%
   mutate(negation = str_detect(emotion_type, "_negated")) %>%
@@ -207,7 +184,7 @@ Now try hugging face
 ```{r}
 
 candidate_labels = c("Buy", "Own", "Advocate")
-result <- classifier(all_dat_mayo$`Full Comments`, candidate_labels, multi_label = TRUE)
+result <- classifier(all_dat_mayo$Full.Comments, candidate_labels, multi_label = TRUE)
 data_test = unlist(result)
 
 huggy_face_sequence = list()
